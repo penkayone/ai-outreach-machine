@@ -1,0 +1,65 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Credentials / API keys
+credentials.json
+secrets.json
+*.pem
+*.key
+
+# IDE — JetBrains
+.idea/
+
+# IDE — VS Code
+.vscode/
+
+# IDE — Sublime / Vim / Emacs
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# OS — macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# OS — Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+
+# OS — Linux
+.directory
+.Trash-*
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node (на случай вспомогательных скриптов)
+node_modules/
+.npm/
+.pnpm-store/
+
+# n8n локальные данные / экспорты-черновики
+.n8n/
+*.local.json
+workflows/*.local.json
+workflows/_drafts/
+workflows/_backup/
+
+# Временные файлы и кеши
+tmp/
+temp/
+.cache/
+*.bak
+*.tmp

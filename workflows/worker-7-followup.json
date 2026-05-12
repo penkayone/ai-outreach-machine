@@ -1,0 +1,540 @@
+{
+  "name": "Worker 7 — Follow-up (5d, 1x)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 14 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a4597d9e-ef96-4b78-ac61-98000351982b",
+      "name": "Daily Schedule (14:00 MSK)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -208,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "73a09769-c757-430b-9203-b13f0dbaf9a5",
+      "name": "Get Outreach Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        -128
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Replies",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "4cc122ab-b7ed-4cd5-bfea-451c27fca8fd",
+      "name": "Get Replies Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        112
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Suppression",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "0af968a6-f6ed-4622-b06b-8f63f69f03ec",
+      "name": "Get Suppression Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        368
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter Candidates for Follow-up\n// Returns only leads who need a follow-up email\n\nconst outreachItems = $('Get Outreach Sheet').all();\nconst repliesItems = $('Get Replies Sheet').all();\nconst suppressionItems = $('Get Suppression Sheet').all();\n\nconst FOLLOWUP_DAYS = 5;\nconst now = new Date();\nconst cutoffDate = new Date(now.getTime() - FOLLOWUP_DAYS * 24 * 60 * 60 * 1000);\n\n// Build sets for O(1) lookup\nconst repliedWebsites = new Set();\nrepliesItems.forEach(r => {\n  const w = (r.json.outreach_website || '').toLowerCase().replace(/\\/$/, '');\n  if (w) repliedWebsites.add(w);\n});\n\nconst suppressedEmails = new Set();\nsuppressionItems.forEach(s => {\n  const e = (s.json.email || '').toLowerCase().trim();\n  if (e) suppressedEmails.add(e);\n});\n\n// Filter\nconst candidates = outreachItems.filter(item => {\n  const r = item.json;\n\n  // 1. Must be sent\n  if (r.status !== 'sent') return false;\n\n  // 2. Must have email\n  if (!r.email || !r.email.trim()) return false;\n\n  // 3. Must have generated_at and be older than 5 days\n  const genStr = r.generated_at || r.date_generated;\n  if (!genStr) return false;\n  const genDate = new Date(genStr);\n  if (isNaN(genDate.getTime())) return false;\n  if (genDate > cutoffDate) return false;\n\n  // 4. Lead must NOT have replied\n  const website = (r.website || '').toLowerCase().replace(/\\/$/, '');\n  if (repliedWebsites.has(website)) return false;\n\n  // 5. Lead must NOT be in suppression\n  const email = (r.email || '').toLowerCase().trim();\n  if (suppressedEmails.has(email)) return false;\n\n  // 6. Must NOT have followup_at already set\n  if (r.followup_at && String(r.followup_at).trim() !== '') return false;\n  if (r.followup_status === 'sent' || r.followup_status === 'replied') return false;\n\n  return true;\n}).map(item => {\n  const r = item.json;\n  // Pass through original fields needed for follow-up generation\n  return {\n    json: {\n      website: r.website,\n      email: r.email,\n      company_name: r.company_name,\n      city: r.city,\n      country: r.country,\n      language: r.language,\n      score: r.score,\n      original_subject_a: r.subject_a,\n      original_subject_b: r.subject_b,\n      original_preheader: r.preheader,\n      original_body: r.body,\n      original_message_id: r.message_id || '',\n      original_generated_at: r.generated_at || r.date_generated,\n      days_since_sent: Math.floor((now - new Date(r.generated_at || r.date_generated)) / (1000 * 60 * 60 * 24))\n    }\n  };\n});\n\nreturn candidates;\n"
+      },
+      "id": "7f76d1fd-0bce-444c-bdaa-e646157103ad",
+      "name": "Filter Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "4a51a9b5-215a-418c-88c8-dbc33fca8065",
+      "name": "Loop Over Candidates",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        432,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Follow-up Prompt for Claude\nconst lead = $json;\n\nconst systemPrompt = `Je bent een ervaren cold email copywriter. Je schrijft follow-up emails in het Nederlands voor B2B outreach naar Nederlandse vastgoedmakelaars.\n\nREGELS:\n- Schrijf in het Nederlands (formeel \"u\" vorm)\n- Maximaal 60 woorden in body\n- Geen agressieve sales taal\n- Geen \"ik wilde even checken\" cliches\n- Wees direct en respectvol\n- Sluit af met \"Groet, Anton\"\n\nKIES EEN VAN DEZE 3 STRATEGIEEN op basis van de oorspronkelijke email:\n\nSTRATEGIE 1 - BUMP (zachte herinnering):\nKorte, vriendelijke herinnering. Geen druk. Bijvoorbeeld:\n\"Misschien gemist tussen de drukte. Geen probleem als het nu niet uitkomt.\"\n\nSTRATEGIE 2 - VALUE-ADD (extra waarde):\nVoeg een concreet voordeel toe dat in de eerste email niet stond. Bijvoorbeeld een case study, statistiek, of specifiek aanbod.\n\nSTRATEGIE 3 - SOFT CLOSE (vriendelijk afsluiten):\nToon begrip dat het misschien geen prioriteit is. Geef de lead vrijheid. Dit werkt vaak verrassend goed door reverse psychology.\nBijvoorbeeld: \"Ik sluit deze thread af. Mocht het later relevant worden, dan hoor ik het graag.\"\n\nOUTPUT: alleen JSON, geen extra tekst:\n{\n  \"strategy\": \"bump\" | \"value_add\" | \"soft_close\",\n  \"body\": \"tekst van de follow-up email\",\n  \"reasoning\": \"korte uitleg waarom deze strategie\"\n}`;\n\nconst userPrompt = `Schrijf een follow-up email voor deze lead die ${lead.days_since_sent} dagen geleden de eerste email kreeg en niet heeft geantwoord.\n\nBEDRIJF: ${lead.company_name || 'onbekend'}\nSTAD: ${lead.city || ''}\nLAND: ${lead.country || 'Nederland'}\n\nOORSPRONKELIJKE EMAIL DIE ZE NIET BEANTWOORDDEN:\nSubject: ${lead.original_subject_a || lead.original_subject_b || ''}\nPreheader: ${lead.original_preheader || ''}\nBody:\n${lead.original_body || ''}\n\nGenereer nu een follow-up. Output: alleen JSON.`;\n\nreturn [{\n  json: {\n    ...lead,\n    _claude_payload: {\n      model: \"claude-sonnet-4-5\",\n      max_tokens: 800,\n      system: systemPrompt,\n      messages: [\n        { role: \"user\", content: userPrompt }\n      ]\n    }\n  }\n}];\n"
+      },
+      "id": "48188772-6d72-487c-a662-edc9a36a6aa9",
+      "name": "Build Follow-up Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 12
+      },
+      "id": "ebd47e30-626c-4794-a04b-a4679d9ddc8f",
+      "name": "Wait 12s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        848,
+        0
+      ],
+      "webhookId": "4c10d0fa-5f80-4e5c-9c14-30b7051becb1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._claude_payload) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "f7e681ee-ba0f-4308-83f7-7dab9b4815d4",
+      "name": "Claude Generate Follow-up",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        0
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CRED_ID",
+          "name": "Anthropic API"
+        },
+        "httpHeaderAuth": {
+          "id": "YOUR_ANTHROPIC_CRED_ID",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude Response and prepare email\nconst claudeResponse = $json;\nconst leadData = $('Build Follow-up Prompt').item.json;\n\nlet parsed = {\n  strategy: 'bump',\n  body: '',\n  reasoning: ''\n};\n\ntry {\n  // Claude API response structure: content[0].text contains the JSON\n  const textContent = claudeResponse.content?.[0]?.text || claudeResponse.content || '';\n\n  // Try to extract JSON from response (might be wrapped in markdown code blocks)\n  let jsonStr = textContent;\n  const jsonMatch = textContent.match(/```json\\s*([\\s\\S]*?)\\s*```/) || textContent.match(/```\\s*([\\s\\S]*?)\\s*```/);\n  if (jsonMatch) {\n    jsonStr = jsonMatch[1];\n  }\n\n  // Find first { and last } to extract JSON\n  const firstBrace = jsonStr.indexOf('{');\n  const lastBrace = jsonStr.lastIndexOf('}');\n  if (firstBrace >= 0 && lastBrace > firstBrace) {\n    jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);\n  }\n\n  parsed = JSON.parse(jsonStr);\n} catch (e) {\n  // Fallback: use raw text as body\n  parsed.body = (claudeResponse.content?.[0]?.text || '').slice(0, 500);\n  parsed.strategy = 'bump';\n  parsed.reasoning = 'parse_failed_fallback';\n}\n\n// Build subject — Re: original\nconst originalSubject = leadData.original_subject_a || leadData.original_subject_b || 'follow-up';\nconst subject = originalSubject.toLowerCase().startsWith('re:')\n  ? originalSubject\n  : `Re: ${originalSubject}`;\n\n// Build email body\nconst body = parsed.body || '';\n\n// Build HTML version\nconst htmlBody = body\n  .split('\\n')\n  .map(line => line.trim() ? `<p>${line.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : '')\n  .filter(Boolean)\n  .join('\\n');\n\n// Generate followup tracking ID\nconst followupId = `followup_${parsed.strategy}_${new Date().toISOString()}`;\n\nreturn [{\n  json: {\n    ...leadData,\n    followup_strategy: parsed.strategy,\n    followup_reasoning: parsed.reasoning,\n    followup_subject: subject,\n    followup_body: body,\n    followup_html: htmlBody,\n    followup_tracking_id: followupId,\n    has_original_message_id: !!(leadData.original_message_id && leadData.original_message_id.startsWith('<'))\n  }\n}];\n"
+      },
+      "id": "9dffdf7a-02ef-44ca-827d-bfcf1851ca17",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "your-outreach-email@gmail.com",
+        "toEmail": "={{ $json.email }}",
+        "subject": "={{ $json.followup_subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.followup_body }}",
+        "html": "={{ $json.followup_html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "973f016a-6e14-4849-a9cf-338deec86476",
+      "name": "Send Follow-up Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        0
+      ],
+      "webhookId": "9863494c-8ab8-402c-9c76-47e21e459af1",
+      "credentials": {
+        "smtp": {
+          "id": "YOUR_GMAIL_SMTP_CRED_ID",
+          "name": "Gmail SMTP Outreach"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "website": "={{ $('Parse Claude Response').item.json.website }}",
+            "followup_at": "={{ new Date().toISOString() }}",
+            "followup_status": "={{ $json.error ? 'failed' : 'sent' }}",
+            "followup_message_id": "={{ $('Parse Claude Response').item.json.followup_tracking_id }}"
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "followup_at",
+              "displayName": "followup_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "followup_status",
+              "displayName": "followup_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "followup_message_id",
+              "displayName": "followup_message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "81771124-c468-465c-bec0-8a6619ab0951",
+      "name": "Update Outreach Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1648,
+        0
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Telegram Summary — runs ONCE after all follow-ups sent\n// Aggregates results across all loop iterations\nconst allItems = $('Parse Claude Response').all();\n\nconst total = allItems.length;\nconst successful = allItems.filter(i => i.json.followup_status === 'sent' || !i.json.error).length;\nconst failed = total - successful;\n\nconst strategies = {\n  bump: 0,\n  value_add: 0,\n  soft_close: 0\n};\n\nallItems.forEach(i => {\n  const s = i.json.followup_strategy;\n  if (strategies.hasOwnProperty(s)) strategies[s]++;\n});\n\nlet msg = `📨 <b>FOLLOW-UP ОТЧЕТ</b>\\n`;\nmsg += `<i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}</i>\\n\\n`;\n\nif (total === 0) {\n  msg += `Кандидатов на follow-up сегодня: <b>0</b>\\n\\n`;\n  msg += `Это нормально, если:\\n`;\n  msg += `• Все письма за последние 5 дней уже получили ответ\\n`;\n  msg += `• Sender не отправлял писем 5+ дней назад\\n`;\n  msg += `• Все нужные follow-up уже отправлены ранее`;\n} else {\n  msg += `📤 <b>Отправлено follow-up:</b> ${successful} из ${total}\\n`;\n  if (failed > 0) {\n    msg += `❌ <b>Ошибки:</b> ${failed}\\n`;\n  }\n  msg += `\\n<b>СТРАТЕГИИ:</b>\\n`;\n  if (strategies.bump > 0) msg += `🔄 Bump (мягкое напоминание): ${strategies.bump}\\n`;\n  if (strategies.value_add > 0) msg += `💎 Value-add (доп ценность): ${strategies.value_add}\\n`;\n  if (strategies.soft_close > 0) msg += `👋 Soft close (закрытие): ${strategies.soft_close}\\n`;\n  msg += `\\n`;\n\n  // Show first 5 companies\n  const companies = allItems.slice(0, 5).map(i => {\n    const j = i.json;\n    return `• ${j.company_name || j.email} (${j.followup_strategy})`;\n  });\n  msg += `<b>ПЕРВЫЕ ${Math.min(5, total)} КОМПАНИЙ:</b>\\n`;\n  msg += companies.join('\\n');\n  if (total > 5) msg += `\\n... и еще ${total - 5}`;\n}\n\nreturn [{\n  json: {\n    telegram_message: msg,\n    total_candidates: total,\n    successful: successful,\n    failed: failed\n  }\n}];"
+      },
+      "id": "b3b532f3-4941-4fef-bb4a-fb5f58331234",
+      "name": "Aggregate Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegram_message }}",
+        "additionalFields": {
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "95ee8361-0591-4866-a8ca-5dcad1fbdb0e",
+      "name": "Send Telegram Summary",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1072,
+        304
+      ],
+      "webhookId": "8416d374-181a-4bf9-9b09-d9bb0765fdfa",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_FOLLOWUP_CRED_ID",
+          "name": "AI Outreach Followup Bot"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Schedule (14:00 MSK)": {
+      "main": [
+        [
+          {
+            "node": "Get Outreach Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Outreach Sheet": {
+      "main": [
+        [
+          {
+            "node": "Get Replies Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Replies Sheet": {
+      "main": [
+        [
+          {
+            "node": "Get Suppression Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Suppression Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Candidates": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Candidates": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Follow-up Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Follow-up Prompt": {
+      "main": [
+        [
+          {
+            "node": "Wait 12s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 12s": {
+      "main": [
+        [
+          {
+            "node": "Claude Generate Follow-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Generate Follow-up": {
+      "main": [
+        [
+          {
+            "node": "Parse Claude Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Update Outreach Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Outreach Status": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}

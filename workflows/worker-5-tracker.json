@@ -1,0 +1,829 @@
+{
+  "name": "Worker 5 — Tracker v2.9 (final)",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {
+          "customEmailConfig": "[\"UNSEEN\"]"
+        }
+      },
+      "id": "b8381b3d-2173-4aa5-8f52-1c288e5761f4",
+      "name": "IMAP Read New Emails",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -2800,
+        208
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "imap": {
+          "id": "YOUR_GMAIL_IMAP_CRED_ID",
+          "name": "Gmail IMAP Outreach"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Универсальный парсер from email из любого формата IMAP output.\n// Поддерживает: string, object с .text, object с .value[], headers.from, fromAddress.\n\nfunction extractEmailAndName(rawFromField) {\n  // rawFromField может быть string, object, array\n  let raw = '';\n\n  if (!rawFromField) return { email: '', name: '' };\n\n  if (typeof rawFromField === 'string') {\n    raw = rawFromField;\n  } else if (Array.isArray(rawFromField)) {\n    // Иногда from = [{ address: 'x@y', name: 'Name' }]\n    if (rawFromField.length > 0) {\n      const first = rawFromField[0];\n      if (first.address) {\n        return { email: String(first.address).toLowerCase().trim(), name: String(first.name || '').trim() };\n      }\n      raw = String(first);\n    }\n  } else if (typeof rawFromField === 'object') {\n    // Иногда { value: [{ address, name }] } или { text: 'Name <x@y>' } или { address, name }\n    if (rawFromField.address) {\n      return { email: String(rawFromField.address).toLowerCase().trim(), name: String(rawFromField.name || '').trim() };\n    }\n    if (rawFromField.value && Array.isArray(rawFromField.value) && rawFromField.value.length > 0) {\n      const v = rawFromField.value[0];\n      if (v.address) {\n        return { email: String(v.address).toLowerCase().trim(), name: String(v.name || '').trim() };\n      }\n    }\n    if (rawFromField.text) {\n      raw = String(rawFromField.text);\n    }\n  }\n\n  if (!raw) return { email: '', name: '' };\n\n  // Парсим \"Name <email@x.com>\" или \"email@x.com\"\n  const m = raw.match(/<([^>]+)>/);\n  if (m) {\n    return {\n      email: m[1].toLowerCase().trim(),\n      name: raw.replace(/<[^>]+>/, '').replace(/[\"']/g, '').trim()\n    };\n  }\n  return {\n    email: raw.toLowerCase().trim(),\n    name: ''\n  };\n}\n\nconst items = $input.all();\nconst result = [];\n\nconst hardBlacklist = [\n  'noreply', 'no-reply', 'donotreply', 'do-not-reply',\n  'mailer-daemon', 'postmaster',\n  'security-noreply', 'security@google',\n  'accounts.google.com',\n  'github.com', 'githubusercontent.com',\n  'chatgpt.com', 'openai.com'\n];\n\nfor (const item of items) {\n  const data = item.json || {};\n\n  // Пробуем разные места где может быть from\n  let fromField = data.from\n    || (data.headers && (data.headers.from || data.headers.From))\n    || data.fromAddress\n    || data.sender\n    || '';\n\n  const { email: fromEmail, name: fromName } = extractEmailAndName(fromField);\n\n  const subject = (data.subject || data.Subject || '').toString();\n  const textBody = (data.text || data.textPlain || '').toString();\n  const htmlBody = (data.html || data.textHtml || '').toString();\n  const stripped = htmlBody.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\n  const bodyForClaude = textBody.length > 50 ? textBody : stripped;\n\n  let uid = '';\n  if (data.uid) uid = data.uid.toString();\n  else if (data.attributes && data.attributes.uid) uid = data.attributes.uid.toString();\n  else if (data.attrs && data.attrs.uid) uid = data.attrs.uid.toString();\n  else if (data.messageId) uid = data.messageId.toString();\n  else if (data['message-id']) uid = data['message-id'].toString();\n\n  if (!fromEmail || !fromEmail.includes('@')) continue;\n\n  let skip = false;\n  for (const bl of hardBlacklist) {\n    if (fromEmail.includes(bl)) { skip = true; break; }\n  }\n  if (skip) continue;\n\n  if (!bodyForClaude || bodyForClaude.length < 5) continue;\n\n  const receivedAt = (data.date || data.Date || new Date().toISOString()).toString();\n\n  result.push({\n    json: {\n      from_email: fromEmail,\n      from_name: fromName,\n      subject: subject,\n      body: bodyForClaude.substring(0, 4000),\n      received_at: receivedAt,\n      imap_uid: uid\n    }\n  });\n}\n\n// Если 0 прошло - отдаем ОЧЕНЬ подробный debug item с ключами первого input item\nif (result.length === 0) {\n  const debugInfo = {\n    _debug: true,\n    _info: 'no emails passed filter',\n    from_email: '',\n    _input_count: items.length\n  };\n\n  if (items.length > 0) {\n    const sample = items[0].json || {};\n    debugInfo._sample_keys = Object.keys(sample).slice(0, 30);\n    debugInfo._sample_from_raw = JSON.stringify(sample.from || sample.From || sample.headers?.from || 'NOT_FOUND').substring(0, 500);\n    debugInfo._sample_subject = (sample.subject || sample.Subject || 'NO_SUBJECT').toString().substring(0, 200);\n    debugInfo._sample_uid = String(sample.uid || sample.attributes?.uid || 'NO_UID');\n    debugInfo._sample_has_text = !!sample.text;\n    debugInfo._sample_has_html = !!sample.html;\n    debugInfo._sample_has_headers = !!sample.headers;\n  }\n\n  return [{ json: debugInfo }];\n}\n\nreturn result;"
+      },
+      "id": "3fc7b81d-663e-4504-8e93-eefbf260b422",
+      "name": "Filter Whitelist",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2608,
+        208
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "sent"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4649b869-8a42-4d5a-b1ad-111b63df4469",
+      "name": "Get Outreach Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -2400,
+        208
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Replies",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "7c73bc43-0e88-4551-93f0-7c8ec978ab75",
+      "name": "Get Replies Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -2208,
+        208
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Сопоставляет входящие письма с отправленными outreach.\n// Дедупит по imap_uid (чтобы одно письмо не обработать дважды).\n// Также проверяет Suppression лист - если email там, не обрабатываем.\n// Возвращает только новые matched письма.\n\nfunction flattenRows(items) {\n  const out = [];\n  for (const it of items) {\n    const j = it.json;\n    if (!j) continue;\n    if (Array.isArray(j)) {\n      for (const row of j) out.push(row);\n    } else {\n      out.push(j);\n    }\n  }\n  return out;\n}\n\nconst emails = $('Filter Whitelist').all();\nconst outreachRows = flattenRows($('Get Outreach Sheet').all());\nconst repliesRows = flattenRows($('Get Replies Sheet').all());\n\n// Indexed lookups\nconst sentByEmail = new Map();\nfor (const r of outreachRows) {\n  if (r && r.email && r.status === 'sent') {\n    sentByEmail.set(String(r.email).toLowerCase().trim(), r);\n  }\n}\n\nconst processedUIDs = new Set();\nfor (const r of repliesRows) {\n  if (r && r.imap_uid != null) {\n    processedUIDs.add(String(r.imap_uid));\n  }\n}\n\nconst matches = [];\n\nfor (const item of emails) {\n  const j = item.json;\n  if (!j) continue;\n  \n  const fromEmail = String(j.from_email || '').toLowerCase().trim();\n  const fromName = j.from_name || j.from_email || '';\n  const uid = j.imap_uid != null ? String(j.imap_uid) : '';\n  \n  if (!fromEmail) continue;\n  if (uid && processedUIDs.has(uid)) continue;\n  \n  const sentRow = sentByEmail.get(fromEmail);\n  if (!sentRow) continue;\n  \n  matches.push({\n    json: {\n      from_email: fromEmail,\n      from_name: fromName,\n      reply_subject: j.subject || '',\n      reply_body: j.body || '',\n      received_at: j.date || new Date().toISOString(),\n      imap_uid: uid,\n      outreach_website: sentRow.website || '',\n      company_name: sentRow.company_name || '',\n      city: sentRow.city || '',\n      country: sentRow.country || '',\n      language: sentRow.language || 'en',\n      score: sentRow.score || 0,\n    }\n  });\n}\n\nreturn matches;\n"
+      },
+      "id": "5e14c9e1-9a2a-47ca-8373-03f6c654c9cc",
+      "name": "Match Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2000,
+        208
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "6acb94fb-917e-4e48-bf0b-5a7c61353f3c",
+      "name": "Loop Over Matches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1600,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Формирует request body для Anthropic API\n// Использует ту же схему что Copywriter (claude-sonnet-4-6)\n\nconst item = $json;\n\nconst systemPrompt = `You are an email reply classifier for a B2B cold outreach campaign in real estate niche.\nYou analyze replies from real estate agencies and classify them into exactly ONE of 6 categories:\n\n- positive: shows interest, asks questions about pricing/setup/demo, wants to learn more, says yes\n- negative: clearly not interested, \"no thanks\", \"not relevant\", rejection\n- out_of_office: vacation autoresponder, \"I'm away until X\"\n- unsubscribe: asks to be removed, \"stop emailing\", \"remove me\", \"unsubscribe\", GDPR removal request\n- referral: redirects to another person, \"contact John instead\", \"talk to our marketing team\"\n- neutral: anything unclear, simple acknowledgment, asks unrelated question\n\nRespond ONLY with valid JSON in this exact schema:\n{\n  \"category\": \"positive|negative|out_of_office|unsubscribe|referral|neutral\",\n  \"confidence\": 0.0-1.0,\n  \"reason\": \"1 sentence in Russian explaining why\",\n  \"key_quote\": \"shortest meaningful phrase from reply (max 80 chars), in original language\"\n}\n\nNo markdown, no preamble, ONLY raw JSON.`;\n\nconst userPrompt = [\n  'Context about the lead we cold-emailed:',\n  'Company: ' + (item.company_name || 'unknown'),\n  'City: ' + (item.city || 'unknown'),\n  'Country: ' + (item.country || 'unknown'),\n  'Original lead language: ' + (item.language || 'en'),\n  '',\n  'Reply received:',\n  'From: ' + item.from_email,\n  'From name: ' + (item.from_name || 'unknown'),\n  'Subject: ' + (item.reply_subject || '(no subject)'),\n  '',\n  'Reply body:',\n  '\"\"\"',\n  item.reply_body,\n  '\"\"\"',\n  '',\n  'Classify this reply.'\n].join('\\n');\n\nconst requestBody = {\n  model: 'claude-sonnet-4-6',\n  max_tokens: 400,\n  system: systemPrompt,\n  messages: [\n    { role: 'user', content: userPrompt }\n  ]\n};\n\nreturn [{\n  json: {\n    ...item,\n    _claude_body: requestBody\n  }\n}];\n"
+      },
+      "id": "fa2d520c-e92b-4a31-aacc-f7141c02e45d",
+      "name": "Build Claude Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1408,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "id": "cc572621-970e-4cfb-a076-1ff518fea51f",
+      "name": "Wait 2s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1200,
+        208
+      ],
+      "webhookId": "wait-tracker-2s"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._claude_body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3cbbb1f4-27c0-4fa0-b993-1040b9c3d0c3",
+      "name": "Claude Classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1008,
+        208
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_ANTHROPIC_CRED_ID",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсит ответ Claude, склеивает с контекстом письма\n// Используем $('Build Claude Request') чтобы достать оригинальные поля\n\nconst claudeRaw = $input.first().json;\nconst ctx = $('Build Claude Request').item.json;\n\n// Default значения если parsing fails\nlet parsed = {\n  category: 'neutral',\n  confidence: 0.0,\n  reason: 'parse_failed',\n  key_quote: ''\n};\n\ntry {\n  const content = (claudeRaw.content && claudeRaw.content[0] && claudeRaw.content[0].text) || '';\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  if (match) {\n    const obj = JSON.parse(match[0]);\n    parsed.category = String(obj.category || 'neutral').toLowerCase();\n    parsed.confidence = Number(obj.confidence) || 0;\n    parsed.reason = String(obj.reason || '').substring(0, 300);\n    parsed.key_quote = String(obj.key_quote || '').substring(0, 200);\n  }\n} catch (e) {\n  parsed.reason = 'parse_error: ' + e.message;\n}\n\n// Validate category\nconst validCategories = ['positive', 'negative', 'out_of_office', 'unsubscribe', 'referral', 'neutral'];\nif (!validCategories.includes(parsed.category)) {\n  parsed.category = 'neutral';\n}\n\nreturn [{\n  json: {\n    received_at: ctx.received_at,\n    from_email: ctx.from_email,\n    from_name: ctx.from_name,\n    outreach_website: ctx.outreach_website,\n    reply_subject: ctx.reply_subject,\n    reply_body: ctx.reply_body,\n    category: parsed.category,\n    confidence: parsed.confidence,\n    reason: parsed.reason,\n    key_quote: parsed.key_quote,\n    imap_uid: ctx.imap_uid,\n    // Контекст для Telegram alert\n    _company_name: ctx.company_name,\n    _city: ctx.city,\n    _country: ctx.country,\n    _language: ctx.language\n  }\n}];\n"
+      },
+      "id": "2bb4f02a-efc0-4b2d-8191-d6243be2fe8c",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Replies",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "received_at": "={{ $json.received_at }}",
+            "from_email": "={{ $json.from_email }}",
+            "from_name": "={{ $json.from_name }}",
+            "outreach_website": "={{ $json.outreach_website }}",
+            "reply_subject": "={{ $json.reply_subject }}",
+            "reply_body": "={{ $json.reply_body }}",
+            "category": "={{ $json.category }}",
+            "confidence": "={{ $json.confidence }}",
+            "reason": "={{ $json.reason }}",
+            "key_quote": "={{ $json.key_quote }}",
+            "imap_uid": "={{ $json.imap_uid }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_email",
+              "displayName": "from_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_name",
+              "displayName": "from_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "outreach_website",
+              "displayName": "outreach_website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reply_subject",
+              "displayName": "reply_subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reply_body",
+              "displayName": "reply_body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reason",
+              "displayName": "reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "key_quote",
+              "displayName": "key_quote",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "imap_uid",
+              "displayName": "imap_uid",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6442e182-beb4-4824-82bc-b7be3f222ccb",
+      "name": "Append to Replies",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -608,
+        208
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "website": "={{ $json.outreach_website }}",
+            "status": "replied"
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "675a7209-6c3b-41a1-b422-7c59ae66d2ba",
+      "name": "Update Outreach to Replied",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -400,
+        208
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-positive",
+              "leftValue": "={{ $('Parse Claude Response').item.json.category }}",
+              "rightValue": "positive",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "is-referral",
+              "leftValue": "={{ $('Parse Claude Response').item.json.category }}",
+              "rightValue": "referral",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "7d275a87-7b42-4fd5-99d1-9347e448216e",
+      "name": "Is Critical?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -208,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Формирует HTML сообщение для Telegram\n// parse_mode = HTML\n// ВАЖНО: данные берем из Parse Claude Response, потому что $json это output от Update Outreach (только website+status)\n\nconst r = $('Parse Claude Response').item.json;\n\n// Эмодзи и заголовок по категории\nlet emoji = '';\nlet title = '';\nlet actionLine = '';\n\nif (r.category === 'positive') {\n  emoji = '🔥';\n  title = 'Горячий лид, заинтересовался';\n  actionLine = '<b>Что делать:</b> ответить лично в течение 1 часа, пока теплый';\n} else if (r.category === 'referral') {\n  emoji = '↪️';\n  title = 'Перенаправление на другого человека';\n  actionLine = '<b>Что делать:</b> уточнить контакт нужного человека и написать ему';\n}\n\n// Country flag\nconst flagMap = {\n  'NL': '🇳🇱', 'PL': '🇵🇱', 'CZ': '🇨🇿',\n  'DE': '🇩🇪', 'FR': '🇫🇷', 'ES': '🇪🇸',\n  'IT': '🇮🇹', 'BE': '🇧🇪', 'AT': '🇦🇹',\n  'GB': '🇬🇧', 'IE': '🇮🇪', 'CH': '🇨🇭'\n};\nconst country = (r._country || '').toString().toUpperCase();\nconst flag = flagMap[country] || '🌍';\n\n// HTML escape\nfunction esc(s) {\n  return String(s == null ? '' : s)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nconst company = esc(r._company_name) || '<i>(без названия)</i>';\nconst city = esc(r._city) || '—';\nconst fromName = esc(r.from_name);\nconst fromEmail = esc(r.from_email);\nconst subject = esc(r.reply_subject) || '<i>(без темы)</i>';\n\n// Превью ответа: первые 250 символов\nconst replyText = String(r.reply_body || '').replace(/\\s+/g, ' ').trim();\nconst truncated = replyText.length > 250;\nconst replyPreview = esc(replyText.substring(0, 250)) + (truncated ? '...' : '');\n\nconst reason = esc(r.reason || '');\nconst keyQuote = esc(r.key_quote || '');\nconst confidencePercent = Math.round((Number(r.confidence) || 0) * 100);\n\nconst message = `${emoji} <b>${title}</b>\n\n<b>Компания:</b> ${company}\n<b>Город:</b> ${flag} ${city}\n<b>От кого:</b> ${fromName} &lt;${fromEmail}&gt;\n\n<b>Тема:</b> ${subject}\n\n<blockquote>${replyPreview}</blockquote>\n\n<b>AI анализ:</b> ${reason}\n<b>Уверенность:</b> ${confidencePercent}%\n${keyQuote ? `<b>Ключевая фраза:</b> \"<i>${keyQuote}</i>\"\\n` : ''}\n⚡ ${actionLine}`;\n\nreturn [{ json: { telegram_message: message, chat_id: 'YOUR_TELEGRAM_CHAT_ID' } }];\n"
+      },
+      "id": "ec5df119-5aea-4759-9dff-2c161f18eccd",
+      "name": "Build Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegram_message }}",
+        "additionalFields": {
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "77bb1ef1-f0e4-4136-85a9-eaf04be44124",
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        208,
+        0
+      ],
+      "webhookId": "8b80b067-64a4-44d5-a9be-8111fc8515cd",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_NOTIFIER_CRED_ID",
+          "name": "Telegram Outreach Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-unsub",
+              "leftValue": "={{ $('Parse Claude Response').item.json.category }}",
+              "rightValue": "unsubscribe",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e5a36ed5-c03b-47d2-8196-446c8019a515",
+      "name": "Is Unsubscribe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -208,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Suppression",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email": "={{ $('Parse Claude Response').item.json.from_email }}",
+            "reason": "unsubscribe_request",
+            "added_at": "={{ new Date().toISOString() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reason",
+              "displayName": "reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "added_at",
+              "displayName": "added_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "95fe38c3-f6d8-4745-8d5d-85a824f8a7f0",
+      "name": "Add to Suppression",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        400
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "IMAP Read New Emails": {
+      "main": [
+        [
+          {
+            "node": "Filter Whitelist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Whitelist": {
+      "main": [
+        [
+          {
+            "node": "Get Outreach Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Outreach Sheet": {
+      "main": [
+        [
+          {
+            "node": "Get Replies Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Replies Sheet": {
+      "main": [
+        [
+          {
+            "node": "Match Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Emails": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Matches": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Build Claude Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Request": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s": {
+      "main": [
+        [
+          {
+            "node": "Claude Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Classify": {
+      "main": [
+        [
+          {
+            "node": "Parse Claude Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [
+          {
+            "node": "Append to Replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Replies": {
+      "main": [
+        [
+          {
+            "node": "Update Outreach to Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Outreach to Replied": {
+      "main": [
+        [
+          {
+            "node": "Is Critical?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Critical?": {
+      "main": [
+        [
+          {
+            "node": "Build Telegram Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Unsubscribe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Alert": {
+      "main": [
+        [
+          {
+            "node": "Is Unsubscribe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Unsubscribe?": {
+      "main": [
+        [
+          {
+            "node": "Add to Suppression",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Suppression": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}

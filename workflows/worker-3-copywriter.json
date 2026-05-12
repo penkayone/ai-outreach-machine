@@ -1,0 +1,732 @@
+{
+  "name": "Worker 3 — Copywriter v1.2 (dedupe-hardened)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "a017657f-d96c-4bf5-8b81-f3009b04390f",
+      "name": "Every 1 Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "3e4e2d35-4e9b-40b0-808c-13a18aa412e1",
+      "name": "Get All Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        224,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "e637b8b0-9240-4f36-9ecc-0bb68f6f2933",
+      "name": "Get Existing Outreach",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        0
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function normalizeWebsite(url) {\n  if (!url) return '';\n  return String(url)\n    .trim()\n    .toLowerCase()\n    .replace(/^https?:\\/\\//, '')\n    .replace(/^www\\./, '')\n    .replace(/\\/+$/, '');\n}\n\nconst leads = $('Get All Leads').all();\nconst outreach = $('Get Existing Outreach').all();\n\nconst alreadyGenerated = new Set();\nfor (const item of outreach) {\n  if (item.json && item.json.website) {\n    alreadyGenerated.add(normalizeWebsite(item.json.website));\n  }\n}\n\nconst filtered = leads.filter(item => {\n  const l = item.json;\n  const status = String(l.status || '').trim().toLowerCase();\n  const scoreNum = parseInt(l.score, 10);\n  const email = String(l.email || '').trim();\n  const normalizedWebsite = normalizeWebsite(l.website);\n  \n  if (status !== 'researched') return false;\n  if (isNaN(scoreNum) || scoreNum < 6) return false;\n  if (!email || !email.includes('@')) return false;\n  if (alreadyGenerated.has(normalizedWebsite)) return false;\n  return true;\n});\n\nconst batch = filtered.slice(0, 8);\n\nconsole.log('[Copywriter v1.2] Total leads: ' + leads.length);\nconsole.log('[Copywriter v1.2] Already in Outreach (normalized): ' + alreadyGenerated.size);\nconsole.log('[Copywriter v1.2] Matched filter: ' + filtered.length);\nconsole.log('[Copywriter v1.2] Processing batch: ' + batch.length);\n\nreturn batch;"
+      },
+      "id": "c065d87f-12d9-4503-a374-931b66d2d281",
+      "name": "Filter & Take 8",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "27c77066-60b4-4717-ac1d-5ef10394cbec",
+      "name": "Loop Over Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// v1.1: радикально переработанный промпт. Задача — письмо читалось как от человека,\n// а не как AI-генерированный шаблон. Никаких метрик, клише, продающих фраз.\n\nconst lead = $json;\n\n// --- Определяем язык письма по стране ---\nlet emailLang = 'en';\nlet langName = 'English';\nif (lead.country === 'Netherlands') { emailLang = 'nl'; langName = 'Dutch (Nederlands)'; }\nelse if (lead.country === 'Czech Republic') { emailLang = 'cs'; langName = 'Czech (Čeština)'; }\nelse if (lead.country === 'Poland') { emailLang = 'en'; langName = 'English'; }\n\n// --- Пытаемся вытащить имя владельца из company_name ---\nlet possibleName = '';\nconst companyName = String(lead.company_name || '');\nconst nameIndicators = /\\b(van|de|der|ten|ter|von)\\s+[A-ZÁ-ÿ]/;\nif (nameIndicators.test(companyName)) {\n  possibleName = companyName;\n}\n\n// Подпись отправителя — Anton\nconst senderName = 'Anton';\n\nconst systemPrompt = [\n  'You are a human B2B consultant writing a SHORT personal email to a real estate agency.',\n  'You are NOT a marketer. You are NOT a copywriter. You are a real person sending a quick note.',\n  'Your email should read like something typed in 2 minutes by someone who genuinely checked their site.',\n  'It must NOT read like AI output or like a polished marketing email.',\n  'Output STRICTLY valid JSON only. No preamble. No markdown fences. No explanation.'\n].join(' ');\n\nconst userPrompt = [\n  'Write a short personal email to this real estate agency. Output ONLY valid JSON:',\n  '',\n  '{',\n  '  \"subject_a\": \"<short subject, version A>\",',\n  '  \"subject_b\": \"<short subject, version B — different angle>\",',\n  '  \"preheader\": \"<first line preview ~40-60 chars>\",',\n  '  \"body\": \"<email body, 3-4 short sentences, 50-70 words total>\"',\n  '}',\n  '',\n  '=== CORE PRINCIPLE ===',\n  'Write like you would write to a colleague you barely know. Casual but respectful.',\n  'If you would not say this sentence out loud to a human, DO NOT write it.',\n  '',\n  '=== BODY STRUCTURE (follow EXACTLY) ===',\n  'Sentence 1: State what you noticed on their site. Be CONCRETE — reference a specific detail from NOTES (a tool they use, a missing widget, their specialty, their office count). Keep it factual, not judgmental.',\n  'Sentence 2: Name the thing you do, in plain language. Say it like you would casually say it at a meetup. ONE sentence. Do NOT promise numbers, percentages, or results.',\n  'Sentence 3 (optional): Brief relevance — why you reached out TO THEM specifically. Not \"we help agencies like yours\" — something actually tied to their context.',\n  'Sentence 4: Short, low-pressure question. Not a hard CTA. Examples: \"worth a quick chat?\", \"would it help to see how it works?\", \"open to a 10-min look?\". Vary the wording, do NOT use \"15 minutes\" every time.',\n  '',\n  '=== SIGN-OFF ===',\n  'End body with:',\n  '  [empty line]',\n  '  [informal sign-off in the target language — e.g. Dutch: \"Groet,\" / Czech: \"Zdravím,\" / English: \"Best,\"]',\n  '  ' + senderName,\n  '',\n  '=== HARD BANS (never write these) ===',\n  'Metrics & promises:',\n  '  ❌ \"30% more\", \"40% reacties\", \"2x conversion\", any percentage or multiplier',\n  '  ❌ \"more leads\", \"boost sales\", \"grow your business\", \"scale your agency\"',\n  '  ❌ \"your 9.7 score deserves...\" (do not reference public ratings to flatter)',\n  '',\n  'AI-giveaway openers:',\n  '  ❌ \"I noticed...\", \"I came across...\", \"I was browsing...\", \"viel me op\", \"ik zag\"',\n  '  ❌ \"I hope this finds you well\", \"Quick question — ...\"',\n  '  ❌ \"As someone who works with real estate agencies...\"',\n  '',\n  'Marketing clichés:',\n  '  ❌ \"leverage\", \"unlock\", \"streamline\", \"revolutionize\", \"game-changer\"',\n  '  ❌ \"cutting-edge\", \"innovative\", \"best-in-class\", \"transform\"',\n  '  ❌ \"reach out\", \"touch base\", \"circle back\", \"pick your brain\"',\n  '',\n  'Structural giveaways:',\n  '  ❌ Do not start with \"Hi/Hey [name]\" — start directly with sentence 1',\n  '  ❌ Do not use em-dashes (—). Use commas or periods instead.',\n  '  ❌ Do not use perfect parallel structure in sentences',\n  '',\n  '=== TONE GUIDE ===',\n  'Imagine you are writing this on your phone, between meetings. You noticed something on their site, you do work that is relevant, you want to offer help. That is it.',\n  'Short sentences are good. Incomplete-feeling sentences are fine sometimes. Perfect grammar is not the goal — natural rhythm is.',\n  'You can start a sentence with \"And\" or \"But\". You can use contractions. You can be slightly informal.',\n  '',\n  '=== SUBJECT LINE RULES ===',\n  '- Under 45 characters each.',\n  '- All lowercase OR sentence case. Never Title Case.',\n  '- NO colons, no \"RE:\", no emojis, no exclamation marks.',\n  '- Subject A: sounds like a short question you would Slack to a coworker. Examples (do not copy): \"iets kleins op jullie site\", \"krátká otázka\", \"quick thing about your site\"',\n  '- Subject B: sounds like a casual statement. Examples: \"idee voor ' + (lead.city || 'your city') + '\", \"thought you might find this useful\", \"jedna myšlenka\"',\n  '- Do NOT include the company name in both. At most one.',\n  '',\n  '=== AGENCY DATA ===',\n  'Agency: ' + (lead.company_name || 'unknown'),\n  'Website: ' + (lead.website || ''),\n  'City: ' + (lead.city || 'unknown'),\n  'Country: ' + (lead.country || ''),\n  'Size: ' + (lead.size || 'small'),\n  '',\n  '=== PAIN (internal research finding — DIRECTION only, do not repeat) ===',\n  (lead.pain || 'General automation opportunity'),\n  '',\n  '=== NOTES (use for sentence 1 — pick ONE concrete detail) ===',\n  (lead.notes || 'No notes available'),\n  '',\n  '=== WHAT YOU OFFER (use your own words, do not list features) ===',\n  'You help real estate agencies set up small pieces of automation — things like catching website leads after hours, replying to inquiries automatically, or organizing follow-up for viewings. You work hands-on, not as a platform.',\n  '',\n  '=== LANGUAGE-SPECIFIC NOTES ===',\n  emailLang === 'nl' ? 'Write in natural Dutch. Use \"jullie\" (informal plural) — Dutch real estate agents are fine with that for B2B. If you are unsure about a word or idiom, choose simpler wording. No formal \"u\" unless addressing a specific named senior.' : '',\n  emailLang === 'cs' ? 'Write in natural Czech. Use \"vy\" (formal plural) — Czech B2B still expects politeness. Keep sentences SHORT to avoid declension mistakes. If unsure about a phrasing, simplify it.' : '',\n  emailLang === 'en' ? 'Write in simple, natural English. British or neutral spelling is fine. No American business-bro energy.' : '',\n  '',\n  '=== FINAL CHECK BEFORE OUTPUTTING ===',\n  'Before you finalize, re-read your body and ask:',\n  '  1. Would a real person actually type this? Or does it sound like marketing copy?',\n  '  2. Did I mention any number, percentage, or promise? If YES, rewrite.',\n  '  3. Is sentence 1 truly specific to THIS agency, or could it apply to any agency?',\n  '  4. Does my CTA feel like a question between peers, or like a sales pitch?',\n  'If any answer is wrong, REWRITE before outputting.',\n  '',\n  'Return ONLY the JSON object. No code fences. No commentary.'\n].join('\\n');\n\nconst body = {\n  model: 'claude-sonnet-4-6',\n  max_tokens: 900,\n  system: systemPrompt,\n  messages: [\n    { role: 'user', content: userPrompt }\n  ]\n};\n\nreturn {\n  _body_for_claude: body,\n  _lead: lead,\n  _email_language: emailLang,\n  _possible_name: possibleName\n};"
+      },
+      "id": "d7ef78f9-5f3f-42a0-ac40-696ac041d3a0",
+      "name": "Build Claude Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "id": "51f8bec3-4d19-4249-bb19-e6deb9acd4c4",
+      "name": "Wait 3s (rate limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1328,
+        0
+      ],
+      "webhookId": "9e216024-c92d-4dcb-9c2c-1f7631e42b27"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json._body_for_claude }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 90000
+        }
+      },
+      "id": "436b07c6-b8dc-4f3a-831a-54a70b37d612",
+      "name": "Claude Generate Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1552,
+        0
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_ANTHROPIC_CRED_ID",
+          "name": "Anthropic API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Парсим ответ Claude. Режим runOnceForEachItem.\n// Оригинальный лид и метаданные лежат в $('Build Claude Request').item.json\n\nconst ctx = $('Build Claude Request').item.json;\nconst lead = ctx._lead;\nconst emailLang = ctx._email_language;\nconst possibleName = ctx._possible_name;\nconst resp = $json;\n\nlet subjectA = '';\nlet subjectB = '';\nlet preheader = '';\nlet emailBody = '';\nlet status = 'draft_ready';\nlet apiError = '';\n\nfunction extractJson(text) {\n  if (!text) return null;\n  let s = String(text).trim();\n  if (s.startsWith('```')) {\n    s = s.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```\\s*$/, '');\n  }\n  try { return JSON.parse(s); } catch (e) {}\n  const first = s.indexOf('{');\n  const last = s.lastIndexOf('}');\n  if (first !== -1 && last !== -1 && last > first) {\n    const candidate = s.substring(first, last + 1);\n    try { return JSON.parse(candidate); } catch (e) {}\n  }\n  return null;\n}\n\ntry {\n  if (resp && Array.isArray(resp.content) && resp.content[0] && resp.content[0].text) {\n    const parsed = extractJson(resp.content[0].text);\n    if (parsed) {\n      subjectA = parsed.subject_a || '';\n      subjectB = parsed.subject_b || '';\n      preheader = parsed.preheader || '';\n      emailBody = parsed.body || '';\n    } else {\n      apiError = 'JSON extract failed: ' + String(resp.content[0].text).substring(0, 150);\n      status = 'copy_error';\n    }\n  } else if (resp && resp.type === 'error' && resp.error) {\n    apiError = 'Claude API error: ' + (resp.error.type || '') + ' - ' + (resp.error.message || '').substring(0, 200);\n    status = 'copy_error';\n  } else {\n    apiError = 'Unexpected response structure. Keys: ' + Object.keys(resp || {}).join(',').substring(0, 150);\n    status = 'copy_error';\n  }\n} catch (e) {\n  apiError = 'Parse exception: ' + String(e.message).substring(0, 150);\n  status = 'copy_error';\n}\n\n// FAO-трюк отключен в v1.1 — слишком AI-like, заголовки лучше без него\nlet finalSubjectA = subjectA;\n\nconst today = new Date().toISOString().split('T')[0];\nconst generatedAt = new Date().toISOString();\n\nreturn {\n  // Поля для листа Outreach\n  website: lead.website,\n  email: lead.email,\n  company_name: lead.company_name,\n  city: lead.city || '',\n  country: lead.country || '',\n  language: emailLang,\n  score: lead.score || '',\n  subject_a: finalSubjectA,\n  subject_b: subjectB,\n  preheader: preheader,\n  body: emailBody,\n  generated_at: generatedAt,\n  date_generated: today,\n  status: status,\n  error: apiError,\n  // Для обновления статуса лида:\n  _lead_website: lead.website,\n  _new_lead_status: status === 'draft_ready' ? 'draft_ready' : 'copy_error'\n};"
+      },
+      "id": "4d4bb1d2-dde1-4800-a93d-d0352d83f843",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email": "={{ $json.email }}",
+            "company_name": "={{ $json.company_name }}",
+            "status": "={{ $json.status }}",
+            "website": "={{ $json.website }}",
+            "city": "={{ $json.city }}",
+            "country": "={{ $json.country }}",
+            "language": "={{ $json.language }}",
+            "score": "={{ $json.score }}",
+            "subject_a": "={{ $json.subject_a }}",
+            "subject_b": "={{ $json.subject_b }}",
+            "preheader": "={{ $json.preheader }}",
+            "body": "={{ $json.body }}",
+            "generated_at": "={{ $json.generated_at }}",
+            "date_generated": "={{ $json.date_generated }}",
+            "error": "={{ $json.error }}"
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject_a",
+              "displayName": "subject_a",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject_b",
+              "displayName": "subject_b",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "preheader",
+              "displayName": "preheader",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "body",
+              "displayName": "body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "generated_at",
+              "displayName": "generated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "date_generated",
+              "displayName": "date_generated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e3ceefc8-2390-4a53-a65a-fc0bf3415b12",
+      "name": "Save to Outreach",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        1984,
+        0
+      ],
+      "retryOnFail": false,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "website": "={{ $('Parse Claude Response').item.json._lead_website }}",
+            "status": "={{ $('Parse Claude Response').item.json._new_lead_status }}",
+            "row_number": 0
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "website",
+              "displayName": "website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date_added",
+              "displayName": "date_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pain",
+              "displayName": "pain",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "size",
+              "displayName": "size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "ea353ce2-c8d1-41c4-8b19-5a8f360e2e74",
+      "name": "Update Lead Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        2208,
+        0
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 1 Hour": {
+      "main": [
+        [
+          {
+            "node": "Get All Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Leads": {
+      "main": [
+        [
+          {
+            "node": "Get Existing Outreach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing Outreach": {
+      "main": [
+        [
+          {
+            "node": "Filter & Take 8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Take 8": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Leads": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Build Claude Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Request": {
+      "main": [
+        [
+          {
+            "node": "Wait 3s (rate limit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3s (rate limit)": {
+      "main": [
+        [
+          {
+            "node": "Claude Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Parse Claude Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [
+          {
+            "node": "Save to Outreach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Outreach": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead Status": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}

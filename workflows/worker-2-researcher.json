@@ -1,0 +1,573 @@
+{
+  "name": "Worker 2 — Researcher v5.2 (Claude Sonnet, manual filter)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "d80c58e4-4498-4664-8d52-e0febcb29f4c",
+      "name": "Every 1 Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1536,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "3e70cecb-a399-4861-a70a-9843c536fdd5",
+      "name": "Get All Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -1328,
+        112
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Читаем все лиды, фильтруем вручную на JS.\n// Это надёжнее чем filtersUI в Google Sheets ноде, т.к.\n// точно матчит status='scraped' независимо от пробелов/регистра,\n// и видно в логах реальные цифры.\n\nconst all = $input.all();\nconst scrapedLeads = all.filter(item => {\n  const status = String(item.json.status || '').trim().toLowerCase();\n  return status === 'scraped';\n});\n\nconst batch = scrapedLeads.slice(0, 30);\n\nconsole.log('[Researcher v5.2] Total rows in sheet: ' + all.length);\nconsole.log('[Researcher v5.2] Scraped leads after filter: ' + scrapedLeads.length);\nconsole.log('[Researcher v5.2] Processing batch: ' + batch.length);\n\nreturn batch;"
+      },
+      "id": "96901cf5-df94-4bb5-876c-19d66f35604b",
+      "name": "Filter & Take 30",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "8d0d3550-5e1a-4b74-8bf0-1e3ee39e962e",
+      "name": "Loop Over Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -880,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.website }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-US,en;q=0.9,nl;q=0.8,pl;q=0.7,cs;q=0.6"
+            }
+          ]
+        },
+        "options": {
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 3
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "611631c1-4009-4ba4-acce-273b2f8bd98c",
+      "name": "Fetch Homepage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -656,
+        112
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсим HTML: email, язык, признаки сайта.\n// Если сайт не ответил — помечаем unreachable.\n\nconst lead = $('Loop Over Leads').item.json;\nconst resp = $input.first().json;\nconst html = resp.data || resp.body || '';\n\nif (!html || typeof html !== 'string' || html.length < 100) {\n  return [{\n    json: {\n      ...lead,\n      _reachable: false,\n      _reason: 'Empty or invalid response',\n      _html_length: html ? html.length : 0\n    }\n  }];\n}\n\nconst htmlLower = html.toLowerCase();\nconst textOnly = html.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();\nconst textSample = textOnly.substring(0, 4000);\n\n// --- Email extraction ---\nconst emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})/g;\nconst allEmails = html.match(emailRegex) || [];\nconst cleanEmails = [...new Set(allEmails.map(e => e.toLowerCase()))].filter(e => {\n  if (e.includes('@2x') || e.includes('@3x')) return false;\n  if (e.includes('sentry') || e.includes('wixpress')) return false;\n  if (e.includes('example.com') || e.includes('example.org')) return false;\n  if (e.includes('your-email') || e.includes('yourdomain')) return false;\n  if (e.length > 60) return false;\n  return true;\n});\n\nconst priorityPrefixes = ['info@', 'contact@', 'office@', 'hello@', 'kontakt@', 'biuro@', 'kancelaria@', 'reality@', 'buero@'];\nlet chosenEmail = '';\nfor (const prefix of priorityPrefixes) {\n  const match = cleanEmails.find(e => e.startsWith(prefix));\n  if (match) { chosenEmail = match; break; }\n}\nif (!chosenEmail && cleanEmails.length > 0) {\n  chosenEmail = cleanEmails[0];\n}\nif (!chosenEmail && lead.email) {\n  chosenEmail = lead.email;\n}\n\n// --- Language detection ---\nconst langMarkers = {\n  nl: ['vastgoed', 'makelaar', 'wonen', 'huurwoning', 'koopwoning', 'contact opnemen', 'neem contact', 'meer informatie'],\n  pl: ['nieruchomości', 'oferty', 'mieszkanie', 'sprzedaż', 'wynajem', 'kontakt z nami', 'działka'],\n  cs: ['nemovitosti', 'reality', 'pronájem', 'prodej', 'byt', 'dům', 'kontaktujte nás', 'kancelář'],\n  en: ['real estate', 'properties', 'for sale', 'for rent', 'contact us', 'about us']\n};\n\nlet langScores = {};\nfor (const [lang, markers] of Object.entries(langMarkers)) {\n  let score = 0;\n  for (const m of markers) {\n    if (htmlLower.includes(m)) score++;\n  }\n  langScores[lang] = score;\n}\n\nconst langAttrMatch = html.match(/<html[^>]*\\slang=\"([^\"]+)\"/i);\nconst htmlLang = langAttrMatch ? langAttrMatch[1].substring(0, 2).toLowerCase() : '';\nif (htmlLang && langScores[htmlLang] !== undefined) {\n  langScores[htmlLang] += 3;\n}\n\nlet detectedLang = '';\nlet maxScore = 0;\nfor (const [lang, score] of Object.entries(langScores)) {\n  if (score > maxScore) { maxScore = score; detectedLang = lang; }\n}\nif (maxScore === 0) {\n  const countryLangMap = { 'Netherlands': 'nl', 'Poland': 'pl', 'Czech Republic': 'cs' };\n  detectedLang = countryLangMap[lead.country] || 'en';\n}\n\n// --- Site signals ---\nconst hasChatWidget = /intercom|drift|crisp|tidio|tawk|livechat|freshchat|zendesk/i.test(html);\nconst hasContactForm = /<form[^>]*>/i.test(html) && /input[^>]*type=[\"']?(email|text)[\"']?/i.test(html);\nconst hasPhoneListed = /(?:\\+\\d{1,3}[\\s-]?)?\\(?\\d{2,4}\\)?[\\s-]?\\d{2,4}[\\s-]?\\d{2,6}/.test(textOnly.substring(0, 3000));\nconst sizeHint = html.length > 500000 ? 'large' : html.length > 100000 ? 'medium' : 'small';\n\nreturn [{\n  json: {\n    ...lead,\n    _reachable: true,\n    _extracted_email: chosenEmail,\n    _detected_language: detectedLang,\n    _has_chat_widget: hasChatWidget,\n    _has_contact_form: hasContactForm,\n    _has_phone_listed: hasPhoneListed,\n    _size_hint: sizeHint,\n    _html_length: html.length,\n    _text_sample: textSample,\n    _all_emails_count: cleanEmails.length\n  }\n}];"
+      },
+      "id": "996147b0-20af-405c-a250-024646c4f1be",
+      "name": "Parse & Extract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-reachable",
+              "leftValue": "={{ $json._reachable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e327aefe-661a-4dcb-a461-4d1e4a08f2c7",
+      "name": "Site Reachable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "id": "cd72c0cd-5a4a-4289-b25a-4ae8240bd0f7",
+      "name": "Wait 2s (rate limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "4242c055-8c29-4d6f-8a58-ee6f3bb92bcb"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Собираем body для Claude API отдельной нодой.\n// Это даёт: а) валидный JSON гарантированно, б) видимый input в следующей ноде,\n//         в) лёгкую отладку (видно что именно отправляется).\n\nconst lead = $json;\n\nconst systemPrompt = 'You are a B2B lead qualification expert for an AI automation agency. You analyze real estate agency websites and output STRICTLY valid JSON only. No preamble. No markdown code fences. No explanation. Only the raw JSON object.';\n\nconst userPrompt = [\n  'Analyze this real estate agency and output ONLY valid JSON matching this exact schema:',\n  '',\n  '{',\n  '  \"score\": <integer 1-10>,',\n  '  \"pain\": \"<string, 1-2 sentences in English, what automation problem they likely have>\",',\n  '  \"size\": \"<one of: solo|small|medium|large>\",',\n  '  \"notes\": \"<string, any useful observation, max 200 chars>\"',\n  '}',\n  '',\n  'Scoring guide:',\n  '1-3 = not a good fit (too large corporate, dead site, wrong industry, already heavily automated)',\n  '4-6 = average fit (typical agency, no obvious automation needs visible)',\n  '7-10 = strong fit (clear signs they need automation: outdated site, manual forms, no chat widget, SME size)',\n  '',\n  'Size guide:',\n  'solo = 1 person agency',\n  'small = 2-10 employees',\n  'medium = 11-50 employees',\n  'large = 50+ employees or franchise',\n  '',\n  'Data about the agency:',\n  'Company: ' + (lead.company_name || 'unknown'),\n  'Website: ' + (lead.website || 'unknown'),\n  'Country: ' + (lead.country || 'unknown'),\n  'City: ' + (lead.city || 'unknown'),\n  'Detected language: ' + (lead._detected_language || 'unknown'),\n  'Size hint (by HTML size): ' + (lead._size_hint || 'unknown'),\n  'Has chat widget: ' + lead._has_chat_widget,\n  'Has contact form: ' + lead._has_contact_form,\n  'Phone listed: ' + lead._has_phone_listed,\n  '',\n  'Website text sample (first 4000 chars):',\n  (lead._text_sample || '').substring(0, 4000),\n  '',\n  'Remember: Output ONLY the JSON object. No code fences. No explanation.'\n].join('\\n');\n\nconst body = {\n  model: 'claude-sonnet-4-6',\n  max_tokens: 500,\n  system: systemPrompt,\n  messages: [\n    { role: 'user', content: userPrompt }\n  ]\n};\n\n// Проводим оригинальные поля лида через поле _lead,\n// чтобы следующая нода их не потеряла при парсинге ответа.\nreturn [{\n  json: {\n    _body_for_claude: body,\n    _lead: lead\n  }\n}];"
+      },
+      "id": "78a07863-0244-4df4-bbd7-386035fb78a3",
+      "name": "Build Claude Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json._body_for_claude }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "5633d140-c22a-45e8-81cd-1ce1f7db17ed",
+      "name": "Claude Analyze",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        0
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_ANTHROPIC_CRED_ID",
+          "name": "Anthropic API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсим ответ Claude.\n// Оригинальный лид лежит в $('Build Claude Request').item.json._lead.\n\nconst lead = $('Build Claude Request').item.json._lead;\nconst resp = $input.first().json;\n\nlet score = '';\nlet pain = '';\nlet size = '';\nlet aiNotes = '';\nlet status = 'researched';\nlet apiError = '';\n\n// Helper: вытащить JSON из строки, даже если Claude обернул в ```json ... ``` или добавил текст вокруг.\nfunction extractJson(text) {\n  if (!text) return null;\n  let s = String(text).trim();\n  // Убираем code fences\n  if (s.startsWith('```')) {\n    s = s.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```\\s*$/, '');\n  }\n  // Пытаемся распарсить как есть\n  try { return JSON.parse(s); } catch (e) {}\n  // Если не вышло — ищем первый { и последний }\n  const first = s.indexOf('{');\n  const last = s.lastIndexOf('}');\n  if (first !== -1 && last !== -1 && last > first) {\n    const candidate = s.substring(first, last + 1);\n    try { return JSON.parse(candidate); } catch (e) {}\n  }\n  return null;\n}\n\ntry {\n  // Успешный ответ Anthropic: { content: [{type: 'text', text: '...'}], ... }\n  if (resp && Array.isArray(resp.content) && resp.content[0] && resp.content[0].text) {\n    const parsed = extractJson(resp.content[0].text);\n    if (parsed) {\n      score = parsed.score !== undefined ? String(parsed.score) : '';\n      pain = parsed.pain || '';\n      size = parsed.size || '';\n      aiNotes = parsed.notes || '';\n    } else {\n      apiError = 'JSON extract failed from text: ' + String(resp.content[0].text).substring(0, 150);\n      status = 'ai_error';\n    }\n  } else if (resp && resp.type === 'error' && resp.error) {\n    // Ошибка Anthropic API\n    apiError = 'Claude API error: ' + (resp.error.type || '') + ' - ' + (resp.error.message || '').substring(0, 200);\n    status = 'ai_error';\n  } else if (resp && resp.error) {\n    apiError = 'API error: ' + (resp.error.message || JSON.stringify(resp.error)).substring(0, 200);\n    status = 'ai_error';\n  } else {\n    apiError = 'Unexpected response structure. Keys: ' + Object.keys(resp || {}).join(',').substring(0, 150);\n    status = 'ai_error';\n  }\n} catch (e) {\n  apiError = 'Parse exception: ' + String(e.message).substring(0, 150);\n  status = 'ai_error';\n}\n\n// Собираем notes: AI insight + технические сигналы + ошибка (если есть)\nconst techNotes = [];\nif (lead._has_chat_widget) techNotes.push('chat-widget');\nif (lead._has_contact_form) techNotes.push('contact-form');\nif (lead._has_phone_listed) techNotes.push('phone');\nif (lead._all_emails_count > 0) techNotes.push(lead._all_emails_count + 'emails');\n\nlet finalNotes = aiNotes;\nif (techNotes.length > 0) {\n  finalNotes = (finalNotes ? finalNotes + ' | ' : '') + '[' + techNotes.join(',') + ']';\n}\nif (apiError) {\n  finalNotes = (finalNotes ? finalNotes + ' | ' : '') + 'ERROR: ' + apiError;\n}\n\nreturn [{\n  json: {\n    company_name: lead.company_name,\n    website: lead.website,\n    email: lead._extracted_email || lead.email || '',\n    city: lead.city || '',\n    country: lead.country || '',\n    language: lead._detected_language || '',\n    source: lead.source || 'openstreetmap',\n    source_url: lead.source_url || '',\n    date_added: lead.date_added || '',\n    score: score,\n    pain: pain,\n    size: size,\n    status: status,\n    notes: finalNotes.substring(0, 500)\n  }\n}];"
+      },
+      "id": "b5f26383-4a05-4ff8-8e1f-71cf174392d3",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Сайт недоступен — помечаем unreachable, сохраняем остальные поля.\nconst lead = $json;\nreturn [{\n  json: {\n    company_name: lead.company_name,\n    website: lead.website,\n    email: lead.email || '',\n    city: lead.city || '',\n    country: lead.country || '',\n    language: lead.language || '',\n    source: lead.source || 'openstreetmap',\n    source_url: lead.source_url || '',\n    date_added: lead.date_added || '',\n    score: '0',\n    pain: '',\n    size: '',\n    status: 'unreachable',\n    notes: 'Site not reachable: ' + (lead._reason || 'timeout/error')\n  }\n}];"
+      },
+      "id": "80853d6a-8fdc-4e84-a10b-851f92bdab8c",
+      "name": "Mark Unreachable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "website": "={{ $json.website }}",
+            "email": "={{ $json.email }}",
+            "language": "={{ $json.language }}",
+            "score": "={{ $json.score }}",
+            "pain": "={{ $json.pain }}",
+            "size": "={{ $json.size }}",
+            "status": "={{ $json.status }}",
+            "notes": "={{ $json.notes }}"
+          },
+          "matchingColumns": [
+            "website"
+          ],
+          "schema": [
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "website",
+              "displayName": "website",
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "date_added",
+              "displayName": "date_added",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "pain",
+              "displayName": "pain",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "size",
+              "displayName": "size",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3a389bdb-6c78-4ff0-9644-dc218fb5645f",
+      "name": "Update Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        880,
+        112
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 1 Hour": {
+      "main": [
+        [
+          {
+            "node": "Get All Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Leads": {
+      "main": [
+        [
+          {
+            "node": "Filter & Take 30",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Take 30": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Leads": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fetch Homepage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Homepage": {
+      "main": [
+        [
+          {
+            "node": "Parse & Extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Extract": {
+      "main": [
+        [
+          {
+            "node": "Site Reachable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Site Reachable?": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s (rate limit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Unreachable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s (rate limit)": {
+      "main": [
+        [
+          {
+            "node": "Build Claude Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Request": {
+      "main": [
+        [
+          {
+            "node": "Claude Analyze",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Analyze": {
+      "main": [
+        [
+          {
+            "node": "Parse Claude Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [
+          {
+            "node": "Update Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Unreachable": {
+      "main": [
+        [
+          {
+            "node": "Update Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}

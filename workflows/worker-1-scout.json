@@ -1,0 +1,926 @@
+{
+  "name": "Worker 1 — Scout v4.8 (robust parsing)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "ed7862b2-c509-4ea4-b536-b5f6966a85e1",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3520,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Dashboard",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "metric",
+              "lookupValue": "current_page"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0581e200-bf72-4534-8cc4-0a1ada20a0c0",
+      "name": "Read Current Page",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -3296,
+        112
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const countries = [\n  { iso: 'NL', name: 'Netherlands' },\n  { iso: 'PL', name: 'Poland' },\n  { iso: 'CZ', name: 'Czech Republic' }\n];\n\nconst page = parseInt($input.first().json.value) || 1;\nconst idx = (page - 1) % countries.length;\nconst target = countries[idx];\n\nconst query = `[out:json][timeout:90];\narea[\"ISO3166-1\"=\"${target.iso}\"][\"admin_level\"=\"2\"]->.country;\n(\n  node[\"office\"=\"estate_agent\"](area.country);\n  way[\"office\"=\"estate_agent\"](area.country);\n);\nout center tags;`;\n\nreturn [{\n  json: {\n    current_page: page,\n    country_iso: target.iso,\n    country_name: target.name,\n    overpass_query: query\n  }\n}];"
+      },
+      "id": "261379de-fd7c-405f-8b91-80a0841d4314",
+      "name": "Pick Country",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3088,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "21c98f89-fd37-4c76-8d0e-0f6e4f9657f0",
+      "name": "Read Existing Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        -2864,
+        112
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const country = $('Pick Country').first().json;\nconst existingItems = $('Read Existing Leads').all();\n\nconst existingWebsites = [];\nfor (const item of existingItems) {\n  const w = item.json && item.json.website;\n  if (w) existingWebsites.push(String(w).trim().toLowerCase());\n}\n\nreturn [{\n  json: {\n    current_page: country.current_page,\n    country_iso: country.country_iso,\n    country_name: country.country_name,\n    overpass_query: country.overpass_query,\n    existing_websites: existingWebsites,\n    existing_count: existingWebsites.length\n  }\n}];"
+      },
+      "id": "faed598a-677d-4f75-a412-fc9a397f33ee",
+      "name": "Merge Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2640,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://overpass-api.de/api/interpreter",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            },
+            {
+              "name": "User-Agent",
+              "value": "AIOutreachMachine/1.0 (mailto:your-personal@email.com)"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "data",
+              "value": "={{ $json.overpass_query }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "73f4db53-8621-43ec-8f1e-cc4889e44702",
+      "name": "Overpass Primary (overpass-api.de)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2416,
+        112
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсим текстовый ответ от Overpass.\n// Если ответ — валидный JSON с elements — успех.\n// Если текст ошибки или битый JSON — провал, передаём дальше на fallback.\n\nconst resp = $input.first().json;\nconst text = resp.data || '';\n\nif (!text || typeof text !== 'string') {\n  return [{ json: { ok: false, error: 'Empty or non-string response', endpoint_tried: 'overpass-api.de' } }];\n}\n\ntry {\n  const parsed = JSON.parse(text);\n  if (parsed && Array.isArray(parsed.elements)) {\n    return [{\n      json: {\n        ok: true,\n        elements: parsed.elements,\n        elements_count: parsed.elements.length,\n        endpoint_used: 'overpass-api.de'\n      }\n    }];\n  }\n  return [{ json: { ok: false, error: 'JSON parsed but no elements array', endpoint_tried: 'overpass-api.de' } }];\n} catch (e) {\n  return [{\n    json: {\n      ok: false,\n      error: 'JSON parse failed: ' + String(e.message).substring(0, 100),\n      raw_preview: text.substring(0, 300),\n      endpoint_tried: 'overpass-api.de'\n    }\n  }];\n}"
+      },
+      "id": "2953c41f-07b9-4cf6-82b8-8a7403c7c679",
+      "name": "Check Primary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "primary-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f8a4b2ac-43be-41c9-9ec9-65e4b69ca4b9",
+      "name": "Primary OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1984,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://overpass.private.coffee/api/interpreter",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            },
+            {
+              "name": "User-Agent",
+              "value": "AIOutreachMachine/1.0 (mailto:your-personal@email.com)"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "data",
+              "value": "={{ $('Merge Context').item.json.overpass_query }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "7bd003ca-cf3d-48fc-a610-b4be04bd3ca6",
+      "name": "Overpass Fallback 1 (private.coffee)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1760,
+        304
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst text = resp.data || '';\n\nif (!text || typeof text !== 'string') {\n  return [{ json: { ok: false, error: 'Empty or non-string response', endpoint_tried: 'private.coffee' } }];\n}\n\ntry {\n  const parsed = JSON.parse(text);\n  if (parsed && Array.isArray(parsed.elements)) {\n    return [{\n      json: {\n        ok: true,\n        elements: parsed.elements,\n        elements_count: parsed.elements.length,\n        endpoint_used: 'private.coffee'\n      }\n    }];\n  }\n  return [{ json: { ok: false, error: 'JSON parsed but no elements array', endpoint_tried: 'private.coffee' } }];\n} catch (e) {\n  return [{\n    json: {\n      ok: false,\n      error: 'JSON parse failed: ' + String(e.message).substring(0, 100),\n      raw_preview: text.substring(0, 300),\n      endpoint_tried: 'private.coffee'\n    }\n  }];\n}"
+      },
+      "id": "bceceb84-c496-4e79-ad77-cce1839b3cdb",
+      "name": "Check Fallback 1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fb1-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ec64d35d-e571-417c-995b-f56a4e5fb812",
+      "name": "Fallback 1 OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1328,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openstreetmap.fr/oapi/interpreter",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            },
+            {
+              "name": "User-Agent",
+              "value": "AIOutreachMachine/1.0 (mailto:your-personal@email.com)"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "data",
+              "value": "={{ $('Merge Context').item.json.overpass_query }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "6f145f9d-fe9d-4ca1-aaac-209dfd137291",
+      "name": "Overpass Fallback 2 (osm.fr)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1104,
+        512
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst text = resp.data || '';\n\nif (!text || typeof text !== 'string') {\n  return [{ json: { ok: false, error: 'Empty or non-string response', endpoint_tried: 'api.openstreetmap.fr' } }];\n}\n\ntry {\n  const parsed = JSON.parse(text);\n  if (parsed && Array.isArray(parsed.elements)) {\n    return [{\n      json: {\n        ok: true,\n        elements: parsed.elements,\n        elements_count: parsed.elements.length,\n        endpoint_used: 'api.openstreetmap.fr'\n      }\n    }];\n  }\n  return [{ json: { ok: false, error: 'JSON parsed but no elements array', endpoint_tried: 'api.openstreetmap.fr' } }];\n} catch (e) {\n  return [{\n    json: {\n      ok: false,\n      error: 'JSON parse failed: ' + String(e.message).substring(0, 100),\n      raw_preview: text.substring(0, 300),\n      endpoint_tried: 'api.openstreetmap.fr'\n    }\n  }];\n}"
+      },
+      "id": "5c46dc79-eea5-42f8-9f2a-4d20e87f68e1",
+      "name": "Check Fallback 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fb2-ok",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1e02cff7-bbd9-4017-a664-e48fee3f3f82",
+      "name": "Fallback 2 OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -656,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "throw new Error('All three Overpass endpoints failed for country ' + $('Merge Context').item.json.country_iso + '. Workflow stopped before page increment. Will retry same country on next run.');"
+      },
+      "id": "9b5d968f-138b-48fd-9b15-81c68b46a8c5",
+      "name": "All Failed — Stop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst elements = response.elements || [];\nconst ctx = $('Merge Context').first().json;\nconst today = new Date().toISOString().split('T')[0];\n\nconst existing = new Set(ctx.existing_websites || []);\n\nconst normalizeWebsite = (url) => {\n  if (!url) return '';\n  let u = String(url).trim().toLowerCase();\n  if (!u.startsWith('http://') && !u.startsWith('https://')) {\n    u = 'https://' + u;\n  }\n  u = u.replace(/\\/$/, '');\n  return u;\n};\n\nconst newLeads = [];\nconst seen = new Set();\nlet skippedExisting = 0;\nlet skippedNoWebsite = 0;\nlet skippedNoName = 0;\nlet skippedDupInBatch = 0;\n\nfor (const el of elements) {\n  const tags = el.tags || {};\n  const name = tags.name || tags['name:en'] || '';\n  if (!name) { skippedNoName++; continue; }\n\n  const website = normalizeWebsite(\n    tags.website ||\n    tags['contact:website'] ||\n    tags.url ||\n    ''\n  );\n\n  if (!website) { skippedNoWebsite++; continue; }\n  if (existing.has(website)) { skippedExisting++; continue; }\n  if (seen.has(website)) { skippedDupInBatch++; continue; }\n  seen.add(website);\n\n  const email = tags.email || tags['contact:email'] || '';\n  const city = tags['addr:city'] || tags['addr:town'] || tags['addr:village'] || '';\n\n  newLeads.push({\n    json: {\n      company_name: name.trim().substring(0, 200),\n      website: website,\n      email: email,\n      city: city,\n      country: ctx.country_name,\n      language: '',\n      source: 'openstreetmap',\n      source_url: `https://www.openstreetmap.org/${el.type}/${el.id}`,\n      date_added: today,\n      score: '',\n      pain: '',\n      size: '',\n      status: 'scraped',\n      notes: ''\n    }\n  });\n}\n\nconsole.log(`[Scout v4.8] Country: ${ctx.country_iso} | Endpoint: ${response.endpoint_used} | OSM total: ${elements.length} | Existing in Leads: ${ctx.existing_count} | New: ${newLeads.length} | Skipped existing: ${skippedExisting} | Skipped no website: ${skippedNoWebsite}`);\n\nreturn newLeads;"
+      },
+      "id": "fe7ace51-7b4f-4825-9304-bb6e1692f85b",
+      "name": "Format New Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-leads",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "502a7122-1f95-4447-9686-62512e488acb",
+      "name": "Has New Leads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "company_name": "={{ $json.company_name }}",
+            "website": "={{ $json.website }}",
+            "email": "={{ $json.email }}",
+            "city": "={{ $json.city }}",
+            "country": "={{ $json.country }}",
+            "language": "={{ $json.language }}",
+            "source": "={{ $json.source }}",
+            "source_url": "={{ $json.source_url }}",
+            "date_added": "={{ $json.date_added }}",
+            "score": "={{ $json.score }}",
+            "pain": "={{ $json.pain }}",
+            "size": "={{ $json.size }}",
+            "status": "={{ $json.status }}",
+            "notes": "={{ $json.notes }}"
+          },
+          "schema": [
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "website",
+              "displayName": "website",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "date_added",
+              "displayName": "date_added",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "score",
+              "displayName": "score",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "pain",
+              "displayName": "pain",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "size",
+              "displayName": "size",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3ae0781c-2c2a-4285-823b-486f60a10404",
+      "name": "Save to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        0
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const saved = $input.all().length;\nreturn [{ json: { saved_count: saved, timestamp: new Date().toISOString() } }];"
+      },
+      "id": "d00bd53a-3ca9-440a-80d7-884868686a11",
+      "name": "Aggregate After Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const currentPage = parseInt($('Read Current Page').first().json.value) || 1;\nreturn [{ json: { next_page: currentPage + 1 } }];"
+      },
+      "id": "43145496-c32e-4158-be71-936ba656562b",
+      "name": "Increment Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Dashboard",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "metric": "current_page",
+            "value": "={{ $json.next_page }}"
+          },
+          "matchingColumns": [
+            "metric"
+          ],
+          "schema": [
+            {
+              "id": "metric",
+              "displayName": "metric",
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "value",
+              "displayName": "value",
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "22595306-be04-413c-a008-42692cb6d5e6",
+      "name": "Update Page Counter",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        112
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Read Current Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Current Page": {
+      "main": [
+        [
+          {
+            "node": "Pick Country",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Country": {
+      "main": [
+        [
+          {
+            "node": "Read Existing Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Existing Leads": {
+      "main": [
+        [
+          {
+            "node": "Merge Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Context": {
+      "main": [
+        [
+          {
+            "node": "Overpass Primary (overpass-api.de)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Overpass Primary (overpass-api.de)": {
+      "main": [
+        [
+          {
+            "node": "Check Primary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Primary": {
+      "main": [
+        [
+          {
+            "node": "Primary OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Primary OK?": {
+      "main": [
+        [
+          {
+            "node": "Format New Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Overpass Fallback 1 (private.coffee)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Overpass Fallback 1 (private.coffee)": {
+      "main": [
+        [
+          {
+            "node": "Check Fallback 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Fallback 1": {
+      "main": [
+        [
+          {
+            "node": "Fallback 1 OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback 1 OK?": {
+      "main": [
+        [
+          {
+            "node": "Format New Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Overpass Fallback 2 (osm.fr)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Overpass Fallback 2 (osm.fr)": {
+      "main": [
+        [
+          {
+            "node": "Check Fallback 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Fallback 2": {
+      "main": [
+        [
+          {
+            "node": "Fallback 2 OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback 2 OK?": {
+      "main": [
+        [
+          {
+            "node": "Format New Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All Failed — Stop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format New Leads": {
+      "main": [
+        [
+          {
+            "node": "Has New Leads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has New Leads?": {
+      "main": [
+        [
+          {
+            "node": "Save to Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Increment Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Sheets": {
+      "main": [
+        [
+          {
+            "node": "Aggregate After Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate After Save": {
+      "main": [
+        [
+          {
+            "node": "Increment Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Page": {
+      "main": [
+        [
+          {
+            "node": "Update Page Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}

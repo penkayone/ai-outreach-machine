@@ -1,0 +1,418 @@
+{
+  "name": "Worker 6 — Notifier (weekly reports)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "c9e43685-68e6-4251-a4b1-0ee202039071",
+      "name": "Weekly Schedule (Mon 09:00 MSK)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1104,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Outreach",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "f7c2f10a-e61f-4335-80e4-4f8a2ff11ac6",
+      "name": "Get Outreach Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -880,
+        80
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Replies",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "4f313bb3-d5ae-4516-8700-13899f5ba835",
+      "name": "Get Replies Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -656,
+        80
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate Stats node code\n// Reads Outreach + Replies, computes weekly metrics\n\nconst outreachItems = $('Get Outreach Sheet').all();\nconst repliesItems = $('Get Replies Sheet').all();\n\n// Date range: last 7 days (Mon 00:00 -> Mon 09:00)\nconst now = new Date();\nconst periodEnd = new Date(now);\nconst periodStart = new Date(now);\nperiodStart.setDate(periodStart.getDate() - 7);\n\nconst periodStartISO = periodStart.toISOString();\nconst periodEndISO = periodEnd.toISOString();\n\n// Filter Outreach: sent in last 7 days\nconst sentInPeriod = outreachItems.filter(item => {\n  const r = item.json;\n  if (!r.date_generated && !r.generated_at) return false;\n  const dateStr = r.date_generated || r.generated_at;\n  const d = new Date(dateStr);\n  return d >= periodStart && d <= periodEnd && (r.status === 'sent' || r.status === 'replied');\n});\n\n// Filter Replies: received in last 7 days\nconst repliedInPeriod = repliesItems.filter(item => {\n  const r = item.json;\n  if (!r.received_at) return false;\n  const d = new Date(r.received_at);\n  return d >= periodStart && d <= periodEnd;\n});\n\n// Counters\nconst sentCount = sentInPeriod.length;\nconst repliedCount = repliedInPeriod.length;\nconst conversionRate = sentCount > 0 ? ((repliedCount / sentCount) * 100).toFixed(1) : '0.0';\n\n// Categories breakdown\nconst categoryCounts = {\n  positive: 0,\n  negative: 0,\n  out_of_office: 0,\n  neutral: 0,\n  referral: 0,\n  unsubscribe: 0\n};\n\nrepliedInPeriod.forEach(item => {\n  const cat = (item.json.category || 'neutral').toLowerCase();\n  if (categoryCounts.hasOwnProperty(cat)) {\n    categoryCounts[cat]++;\n  } else {\n    categoryCounts.neutral++;\n  }\n});\n\n// Top cities (from matched Outreach by website)\nconst cityMap = {};\nconst domainMap = {};\nconst subjectMap = {};\nconst responseTimes = [];\n\nrepliedInPeriod.forEach(reply => {\n  const r = reply.json;\n  // Find matching outreach by website\n  const outreachMatch = outreachItems.find(o => {\n    const ow = (o.json.website || '').toLowerCase().replace(/\\/$/, '');\n    const rw = (r.outreach_website || '').toLowerCase().replace(/\\/$/, '');\n    return ow && rw && ow === rw;\n  });\n\n  if (outreachMatch) {\n    const city = outreachMatch.json.city || 'Unknown';\n    const country = outreachMatch.json.country || '';\n    cityMap[`${city}|${country}`] = (cityMap[`${city}|${country}`] || 0) + 1;\n\n    // Domain\n    const website = outreachMatch.json.website || '';\n    const domainMatch = website.match(/\\.([a-z]{2,3})(\\/|$)/i);\n    if (domainMatch) {\n      const tld = '.' + domainMatch[1].toLowerCase();\n      domainMap[tld] = (domainMap[tld] || 0) + 1;\n    }\n\n    // Subject success (only for positive)\n    if ((r.category || '').toLowerCase() === 'positive') {\n      const subj = outreachMatch.json.subject_a || outreachMatch.json.subject_b || '';\n      if (subj) {\n        subjectMap[subj] = (subjectMap[subj] || 0) + 1;\n      }\n    }\n\n    // Response time\n    if (outreachMatch.json.generated_at && r.received_at) {\n      const sent = new Date(outreachMatch.json.generated_at);\n      const recv = new Date(r.received_at);\n      const hours = (recv - sent) / (1000 * 60 * 60);\n      if (hours > 0 && hours < 720) {\n        responseTimes.push(hours);\n      }\n    }\n  }\n});\n\n// Country flag map\nconst flagMap = {\n  'NL': '🇳🇱', 'Netherlands': '🇳🇱',\n  'PL': '🇵🇱', 'Poland': '🇵🇱',\n  'CZ': '🇨🇿', 'Czech Republic': '🇨🇿', 'Czechia': '🇨🇿',\n  'DE': '🇩🇪', 'Germany': '🇩🇪',\n  'AT': '🇦🇹', 'Austria': '🇦🇹',\n  'CH': '🇨🇭', 'Switzerland': '🇨🇭',\n  'BE': '🇧🇪', 'Belgium': '🇧🇪'\n};\n\n// Top 3 cities\nconst topCities = Object.entries(cityMap)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 3)\n  .map(([key, count]) => {\n    const [city, country] = key.split('|');\n    const flag = flagMap[country] || '🌍';\n    return { city, country, flag, count };\n  });\n\n// Top 3 domains\nconst topDomains = Object.entries(domainMap)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 3)\n  .map(([tld, count]) => ({ tld, count }));\n\n// Best subject\nconst bestSubject = Object.entries(subjectMap)\n  .sort((a, b) => b[1] - a[1])[0];\nconst bestSubjectText = bestSubject ? bestSubject[0] : 'N/A';\n\n// Avg response time\nconst avgResponseHours = responseTimes.length > 0\n  ? (responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length).toFixed(1)\n  : '0';\n\n// Hot leads (positive only)\nconst hotLeads = repliedInPeriod\n  .filter(r => (r.json.category || '').toLowerCase() === 'positive')\n  .map(r => {\n    const reply = r.json;\n    const outreachMatch = outreachItems.find(o => {\n      const ow = (o.json.website || '').toLowerCase().replace(/\\/$/, '');\n      const rw = (reply.outreach_website || '').toLowerCase().replace(/\\/$/, '');\n      return ow && rw && ow === rw;\n    });\n    return {\n      company: outreachMatch ? (outreachMatch.json.company_name || 'Unknown') : (reply.from_name || reply.from_email),\n      city: outreachMatch ? (outreachMatch.json.city || '') : '',\n      country: outreachMatch ? (outreachMatch.json.country || '') : '',\n      flag: outreachMatch ? (flagMap[outreachMatch.json.country] || '🌍') : '🌍',\n      from_email: reply.from_email,\n      key_quote: (reply.key_quote || '').slice(0, 100)\n    };\n  });\n\n// Format dates for display\nconst formatDate = (d) => {\n  const months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];\n  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;\n};\n\nreturn [{\n  json: {\n    report_date: now.toISOString(),\n    period_start: periodStartISO,\n    period_end: periodEndISO,\n    period_start_display: formatDate(periodStart),\n    period_end_display: formatDate(periodEnd),\n    sent_count: sentCount,\n    replied_count: repliedCount,\n    conversion_rate: parseFloat(conversionRate),\n    positive: categoryCounts.positive,\n    negative: categoryCounts.negative,\n    out_of_office: categoryCounts.out_of_office,\n    neutral: categoryCounts.neutral,\n    referral: categoryCounts.referral,\n    unsubscribe: categoryCounts.unsubscribe,\n    top_cities: topCities,\n    top_domains: topDomains,\n    best_subject: bestSubjectText,\n    avg_response_hours: parseFloat(avgResponseHours),\n    hot_leads: hotLeads,\n    hot_leads_count: hotLeads.length\n  }\n}];\n"
+      },
+      "id": "7b3dc4e5-4b80-4f2c-8400-78cbb1eced06",
+      "name": "Aggregate Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format Telegram Message node\nconst stats = $input.first().json;\n\nconst escapeHtml = (str) => {\n  if (!str) return '';\n  return String(str)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n};\n\n// Calculate percentages for categories\nconst totalReplies = stats.replied_count;\nconst pct = (n) => totalReplies > 0 ? Math.round((n / totalReplies) * 100) : 0;\n\nlet msg = `📊 <b>ЕЖЕНЕДЕЛЬНЫЙ ОТЧЕТ AI OUTREACH</b>\\n`;\nmsg += `<i>Период: ${stats.period_start_display} — ${stats.period_end_display}</i>\\n\\n`;\n\nmsg += `📤 <b>Отправлено:</b> ${stats.sent_count} писем\\n`;\nmsg += `📥 <b>Ответили:</b> ${stats.replied_count} (${stats.conversion_rate}%)\\n`;\nmsg += `🔥 <b>Горячих лидов:</b> ${stats.hot_leads_count} (${stats.sent_count > 0 ? ((stats.hot_leads_count / stats.sent_count) * 100).toFixed(1) : '0.0'}%)\\n\\n`;\n\n// Categories\nif (totalReplies > 0) {\n  msg += `<b>КАТЕГОРИИ ОТВЕТОВ:</b>\\n`;\n  if (stats.positive > 0) msg += `🔥 Positive: ${stats.positive} (${pct(stats.positive)}%)\\n`;\n  if (stats.referral > 0) msg += `👥 Referral: ${stats.referral} (${pct(stats.referral)}%)\\n`;\n  if (stats.negative > 0) msg += `❌ Negative: ${stats.negative} (${pct(stats.negative)}%)\\n`;\n  if (stats.out_of_office > 0) msg += `🌴 Out of office: ${stats.out_of_office} (${pct(stats.out_of_office)}%)\\n`;\n  if (stats.neutral > 0) msg += `🤔 Neutral: ${stats.neutral} (${pct(stats.neutral)}%)\\n`;\n  if (stats.unsubscribe > 0) msg += `🚫 Unsubscribe: ${stats.unsubscribe} (${pct(stats.unsubscribe)}%)\\n`;\n  msg += `\\n`;\n}\n\n// Top cities\nif (stats.top_cities && stats.top_cities.length > 0) {\n  msg += `🏆 <b>ТОП ГОРОДА:</b>\\n`;\n  stats.top_cities.forEach(c => {\n    msg += `${c.flag} ${escapeHtml(c.city)} — ${c.count} ${c.count === 1 ? 'ответ' : 'ответов'}\\n`;\n  });\n  msg += `\\n`;\n}\n\n// Top domains\nif (stats.top_domains && stats.top_domains.length > 0) {\n  msg += `🌐 <b>ТОП ДОМЕНЫ:</b> `;\n  msg += stats.top_domains.map(d => `${d.tld} (${d.count})`).join(', ');\n  msg += `\\n\\n`;\n}\n\n// Best subject\nif (stats.best_subject && stats.best_subject !== 'N/A') {\n  const truncSubj = stats.best_subject.length > 60 ? stats.best_subject.slice(0, 57) + '...' : stats.best_subject;\n  msg += `📧 <b>Лучший subject:</b> \"${escapeHtml(truncSubj)}\"\\n`;\n}\n\n// Avg response time\nif (stats.avg_response_hours > 0) {\n  msg += `⏱ <b>Среднее время ответа:</b> ${stats.avg_response_hours} часов\\n`;\n}\nmsg += `\\n`;\n\n// Hot leads\nif (stats.hot_leads && stats.hot_leads.length > 0) {\n  msg += `🔥 <b>ГОРЯЧИЕ ЛИДЫ ЗА НЕДЕЛЮ:</b>\\n`;\n  stats.hot_leads.forEach((lead, i) => {\n    msg += `${i + 1}. <b>${escapeHtml(lead.company)}</b>`;\n    if (lead.city) msg += ` ${lead.flag} ${escapeHtml(lead.city)}`;\n    msg += `\\n`;\n    if (lead.key_quote) msg += `   <i>\"${escapeHtml(lead.key_quote)}\"</i>\\n`;\n  });\n  msg += `\\n`;\n}\n\n// Closing\nif (stats.hot_leads_count >= 3) {\n  msg += `🚀 Отличная неделя! Так держать!`;\n} else if (stats.hot_leads_count >= 1) {\n  msg += `💪 Есть теплые лиды, продолжай в том же духе!`;\n} else if (stats.sent_count > 0) {\n  msg += `📈 Hot leads пока нет, но отправка идет. Stay focused.`;\n} else {\n  msg += `⚠️ За неделю писем не отправлено. Проверь Worker 4 Sender.`;\n}\n\n// Prepare hot_leads_json for Sheets\nconst hotLeadsJson = JSON.stringify(stats.hot_leads || []);\n\nreturn [{\n  json: {\n    telegram_message: msg,\n    report_date: stats.report_date,\n    period_start: stats.period_start_display,\n    period_end: stats.period_end_display,\n    sent_count: stats.sent_count,\n    replied_count: stats.replied_count,\n    conversion_rate: stats.conversion_rate,\n    positive: stats.positive,\n    negative: stats.negative,\n    out_of_office: stats.out_of_office,\n    neutral: stats.neutral,\n    referral: stats.referral,\n    unsubscribe: stats.unsubscribe,\n    top_city: stats.top_cities[0] ? `${stats.top_cities[0].city}, ${stats.top_cities[0].country}` : '',\n    top_domain: stats.top_domains[0] ? stats.top_domains[0].tld : '',\n    best_subject: stats.best_subject,\n    avg_response_hours: stats.avg_response_hours,\n    hot_leads_json: hotLeadsJson\n  }\n}];\n"
+      },
+      "id": "82521928-1b2b-4efc-8e85-b04f2caca763",
+      "name": "Format Report Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegram_message }}",
+        "additionalFields": {
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "72ce8bb3-9088-42d4-bf34-ea058b13dd49",
+      "name": "Send Telegram Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -32
+      ],
+      "webhookId": "d580c945-d375-497e-8478-5b313a92e1c2",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_REPORTS_CRED_ID",
+          "name": "AI Outreach Reports Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Reports",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "report_date": "={{ $json.report_date }}",
+            "period_start": "={{ $json.period_start }}",
+            "period_end": "={{ $json.period_end }}",
+            "sent_count": "={{ $json.sent_count }}",
+            "replied_count": "={{ $json.replied_count }}",
+            "conversion_rate": "={{ $json.conversion_rate }}",
+            "positive": "={{ $json.positive }}",
+            "negative": "={{ $json.negative }}",
+            "out_of_office": "={{ $json.out_of_office }}",
+            "neutral": "={{ $json.neutral }}",
+            "referral": "={{ $json.referral }}",
+            "unsubscribe": "={{ $json.unsubscribe }}",
+            "top_city": "={{ $json.top_city }}",
+            "top_domain": "={{ $json.top_domain }}",
+            "best_subject": "={{ $json.best_subject }}",
+            "avg_response_hours": "={{ $json.avg_response_hours }}",
+            "hot_leads_json": "={{ $json.hot_leads_json }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "report_date",
+              "displayName": "report_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "period_start",
+              "displayName": "period_start",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "period_end",
+              "displayName": "period_end",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sent_count",
+              "displayName": "sent_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "replied_count",
+              "displayName": "replied_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "conversion_rate",
+              "displayName": "conversion_rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "positive",
+              "displayName": "positive",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "negative",
+              "displayName": "negative",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "out_of_office",
+              "displayName": "out_of_office",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "neutral",
+              "displayName": "neutral",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "referral",
+              "displayName": "referral",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "unsubscribe",
+              "displayName": "unsubscribe",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "top_city",
+              "displayName": "top_city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "top_domain",
+              "displayName": "top_domain",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "best_subject",
+              "displayName": "best_subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "avg_response_hours",
+              "displayName": "avg_response_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "hot_leads_json",
+              "displayName": "hot_leads_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "330ba2dd-08b7-4eae-a74a-70cad4a58d80",
+      "name": "Log to Reports Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        160
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "YOUR_GOOGLE_SHEETS_CRED_ID",
+          "name": "Google Sheets account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Weekly Schedule (Mon 09:00 MSK)": {
+      "main": [
+        [
+          {
+            "node": "Get Outreach Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Outreach Sheet": {
+      "main": [
+        [
+          {
+            "node": "Get Replies Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Replies Sheet": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Stats": {
+      "main": [
+        [
+          {
+            "node": "Format Report Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Report Message": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Report",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Reports Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}
