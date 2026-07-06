@@ -2,7 +2,7 @@
 
 Production-grade automated B2B cold outreach system built on n8n. Finds leads, researches them, writes personalized emails in 9 languages, sends with proper rate limits, classifies replies via Claude AI, and alerts hot leads to Telegram — all without human intervention.
 
-**Status:** ✅ Production. 7 workflows running 24/7. Processed 469+ emails in pilot.
+**Status:** 🛠 Prototype / on pause. Built and validated in a 10-day pilot, currently paused and being reworked.
 
 ---
 
